@@ -313,6 +313,7 @@ class Http2Session : public AsyncWrap, public StreamBase {
     nghttp2_set_callback_stream_free(&cb, OnStreamFree);
     nghttp2_set_callback_stream_get_trailers(&cb, OnTrailers);
     nghttp2_set_callbacks_free_session(&cb, OnFreeSession);
+    nghttp2_set_callbacks_allocate_send_buf(&cb, OnAllocateSend);
 
     Http2Options opts(env, options);
 
@@ -365,8 +366,7 @@ class Http2Session : public AsyncWrap, public StreamBase {
   static void OnStreamClose(nghttp2_session_t* session,
                             int32_t id, uint32_t error_code);
   static void OnSessionSend(nghttp2_session_t* handle,
-                            const uv_buf_t* bufs,
-                            unsigned int nbufs,
+                            uv_buf_t* bufs,
                             size_t total);
   static void OnDataChunks(nghttp2_session_t* session,
                            std::shared_ptr<nghttp2_stream_t> stream,
@@ -379,6 +379,8 @@ class Http2Session : public AsyncWrap, public StreamBase {
   static void OnTrailers(nghttp2_session_t* handle,
                          std::shared_ptr<nghttp2_stream_t> stream,
                          MaybeStackBuffer<nghttp2_nv>* trailers);
+  static uv_buf_t* OnAllocateSend(nghttp2_session_t* handle,
+                                  size_t recommended);
 
   int DoWrite(WriteWrap* w, uv_buf_t* bufs, size_t count,
               uv_stream_t* send_handle) override;
@@ -525,6 +527,30 @@ class SessionShutdownWrap : public ReqWrap<uv_idle_t> {
   int32_t lastStreamID_;
   bool immediate_;
   MaybeStackBuffer<uint8_t> opaqueData_;
+};
+
+class SessionSendBuffer : public WriteWrap {
+ public:
+  static void OnDone(WriteWrap* req, int status) {
+    ::delete req;
+  }
+
+  SessionSendBuffer(Environment* env,
+                    Local<Object> obj,
+                    size_t size)
+      : WriteWrap(env, obj, nullptr, OnDone) {
+    buffer_ = uv_buf_init(new char[size], size);
+  }
+
+  ~SessionSendBuffer() {
+    delete[] buffer_.base;
+  }
+
+  uv_buf_t buffer_;
+
+ protected:
+  // This is just to avoid the compiler error. This should not be called
+  void operator delete(void* ptr) { UNREACHABLE(); }
 };
 
 }  // namespace http2

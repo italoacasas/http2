@@ -711,11 +711,26 @@ int Http2Session::DoWrite(WriteWrap* req_wrap,
   return 0;
 }
 
+uv_buf_t* Http2Session::OnAllocateSend(nghttp2_session_t* handle,
+                                       size_t recommended) {
+  Http2Session* session =
+      ContainerOf(&Http2Session::handle_, handle);
+
+  Environment* env = session->env();
+  HandleScope scope(env->isolate());
+  Local<Object> req_wrap_obj =
+    env->write_wrap_constructor_function()
+      ->NewInstance(env->context()).ToLocalChecked();
+  SessionSendBuffer* buf =
+      ::new SessionSendBuffer(session->env(),
+                              req_wrap_obj,
+                              recommended);
+  return &buf->buffer_;
+}
 
 void Http2Session::OnSessionSend(nghttp2_session_t* handle,
-                                  const uv_buf_t* bufs,
-                                  unsigned int nbufs,
-                                  size_t total) {
+                                 uv_buf_t* buf,
+                                 size_t length) {
   Http2Session* session = ContainerOf(&Http2Session::handle_, handle);
   // Do not attempt to write data if the stream is not alive or is closing
   if (session->stream_ == nullptr ||
@@ -726,19 +741,10 @@ void Http2Session::OnSessionSend(nghttp2_session_t* handle,
 
   Environment* env = session->env();
   HandleScope scope(env->isolate());
-  Local<Object> req_wrap_obj =
-      env->write_wrap_constructor_function()
-          ->NewInstance(env->context()).ToLocalChecked();
-  auto cb = [](WriteWrap* req, int status) {
+  SessionSendBuffer* req = ContainerOf(&SessionSendBuffer::buffer_, buf);
+  uv_buf_t actual = uv_buf_init(buf->base, length);
+  if (session->stream_->DoWrite(req, &actual, 1, nullptr)) {
     req->Dispose();
-  };
-
-  MaybeStackBuffer<uv_buf_t, kSimultaneousBufferCount> buf(nbufs);
-  memcpy(*buf, bufs, nbufs * sizeof(*bufs));
-
-  WriteWrap* write_req = WriteWrap::New(env, req_wrap_obj, nullptr, cb);
-  if (session->stream_->DoWrite(write_req, *buf, nbufs, nullptr)) {
-    write_req->Dispose();
   }
 }
 

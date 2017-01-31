@@ -122,7 +122,7 @@ struct DataChunksFreelistTraits : public DefaultFreelistTraits {
   template <typename T>
   static T* Alloc() {
     nghttp2_data_chunks_t* chunks = Calloc<nghttp2_data_chunks_t>(1);
-    chunks->buf.AllocateSufficientStorage(kSimultaneousBufferCount);
+    chunks->buf.AllocateSufficientStorage(MAX_BUFFER_COUNT);
     return chunks;
   }
 
@@ -136,14 +136,13 @@ struct PendingSessionFreelistTraits : public DefaultFreelistTraits {
   template <typename T>
   static T* Alloc() {
     auto cb = Calloc<nghttp2_pending_session_send_cb>(1);
-    cb->bufs.AllocateSufficientStorage(kSimultaneousBufferCount);
     return cb;
   }
 
   template<typename T>
   static void Reset(T* cb) {
-    cb->total = 0;
-    cb->nbufs = 0;
+    cb->length = 0;
+    cb->buf = nullptr;
   }
 };
 
@@ -193,6 +192,13 @@ inline bool nghttp2_session_find_stream(
   } else {
     return false;
   }
+}
+
+inline void nghttp2_set_callbacks_allocate_send_buf(
+    node_nghttp2_session_callbacks* callbacks,
+    nghttp2_allocate_send_buf_cb cb) {
+  assert(callbacks != nullptr);
+  callbacks->allocate_send_buf = cb;
 }
 
 inline void nghttp2_set_callbacks_free_session(
@@ -389,10 +395,7 @@ inline void nghttp2_session_drain_send_cb(
   assert(handle != nullptr);
   assert(cb != nullptr);
   if (handle->callbacks.send != nullptr) {
-    handle->callbacks.send(handle, *cb->bufs, cb->nbufs, cb->total);
-  }
-  for (unsigned int n = 0; n < cb->nbufs; n++) {
-    delete[] (cb->bufs[n]).base;
+    handle->callbacks.send(handle, cb->buf, cb->length);
   }
   pending_session_send_free_list.push(cb);
 }
@@ -423,7 +426,7 @@ inline void nghttp2_session_drain_data_chunks(
       amount += item->buf.len;
       cb->head = item->next;
       data_chunk_free_list.push(item);
-      if (n == kSimultaneousBufferCount || cb->head == nullptr) {
+      if (n == MAX_BUFFER_COUNT || cb->head == nullptr) {
         chunks->nbufs = n;
         handle->callbacks.on_data_chunks(handle, cb->handle, chunks);
         // Notify the nghttp2_session that a given chunk of data has been
@@ -490,28 +493,53 @@ inline void nghttp2_session_drain_callbacks(nghttp2_session_t* handle) {
 
 inline void nghttp2_session_drain_send(nghttp2_session_t* handle) {
   const uint8_t* data;
-  size_t total = 0;
-  unsigned int idx = 0;
   nghttp2_pending_session_send_cb* cb = nullptr;
-  size_t amount = nghttp2_session_mem_send(handle->session, &data);
-  while (amount > 0) {
-    if (cb == nullptr)
-      cb = pending_session_send_free_list.pop();
-    cb->bufs[idx] = uv_buf_init(new char[amount], amount);
-    memcpy(cb->bufs[idx++].base, data, amount);
-    total += amount;
-    if (idx == kSimultaneousBufferCount)
-      break;
-    amount = nghttp2_session_mem_send(handle->session, &data);
+  nghttp2_pending_cb_list* item;
+  size_t amount = 0;
+  size_t offset = 0;
+  size_t src_offset = 0;
+  uv_buf_t* current =
+      handle->callbacks.allocate_send_buf(handle, SEND_BUFFER_RECOMMENDED_SIZE);
+  assert(current);
+  size_t remaining = current->len;
+  while ((amount = nghttp2_session_mem_send(handle->session, &data)) > 0) {
+    while (amount > 0) {
+      if (amount > remaining) {
+        // The amount copied does not fit within the remaining available
+        // buffer, copy what we can tear it off and keep going.
+        memcpy(current->base + offset, data + src_offset, remaining);
+        offset += remaining;
+        src_offset = remaining;
+        amount -= remaining;
+        cb = pending_session_send_free_list.pop();
+        cb->buf = current;
+        cb->length = offset;
+        item = cb_free_list.pop();
+        item->type = NGHTTP2_CB_SESSION_SEND;
+        item->cb = cb;
+        LINKED_LIST_ADD(handle->ready_callbacks, item);
+        offset = 0;
+        current =
+            handle->callbacks.allocate_send_buf(handle,
+                                                SEND_BUFFER_RECOMMENDED_SIZE);
+        assert(current);
+        remaining = current->len;
+        continue;
+      }
+      memcpy(current->base + offset, data + src_offset, amount);
+      offset += amount;
+      remaining -= amount;
+      amount = 0;
+      src_offset = 0;
+    }
   }
-  if (cb != nullptr) {
-    cb->nbufs = idx;
-    cb->total = total;
-    nghttp2_pending_cb_list* item = cb_free_list.pop();
-    item->type = NGHTTP2_CB_SESSION_SEND;
-    item->cb = cb;
-    LINKED_LIST_ADD(handle->ready_callbacks, item);
-  }
+  cb = pending_session_send_free_list.pop();
+  cb->buf = current;
+  cb->length = offset;
+  item = cb_free_list.pop();
+  item->type = NGHTTP2_CB_SESSION_SEND;
+  item->cb = cb;
+  LINKED_LIST_ADD(handle->ready_callbacks, item);
 }
 
 inline void nghttp2_session_send_and_make_ready(nghttp2_session_t* handle) {
