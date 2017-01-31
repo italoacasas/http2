@@ -555,10 +555,9 @@ inline void nghttp2_session_send_and_make_ready(nghttp2_session_t* handle) {
   handle->pending_callbacks_tail = nullptr;
 }
 
-// Run on every loop of the event loop per session
-void OnSessionIdle(uv_idle_t* t) {
+void OnSessionPrep(uv_prepare_t* t) {
   nghttp2_session_t* handle =
-    container_of(t, nghttp2_session_t, idler);
+    container_of(t, nghttp2_session_t, prep);
 
   nghttp2_session_send_and_make_ready(handle);
   nghttp2_session_drain_callbacks(handle);
@@ -801,8 +800,8 @@ inline int nghttp2_session_init(uv_loop_t* loop,
   }
   nghttp2_session_callbacks_del(callbacks);
 
-  uv_idle_init(loop, &(handle->idler));
-  uv_idle_start(&(handle->idler), OnSessionIdle);
+  uv_prepare_init(loop, &(handle->prep));
+  uv_prepare_start(&(handle->prep), OnSessionPrep);
   return ret;
 }
 
@@ -847,14 +846,14 @@ inline int nghttp2_session_free(nghttp2_session_t* handle) {
   assert(handle->ready_callbacks_head == nullptr);
   assert(handle->ready_callbacks_tail == nullptr);
 
-  uv_idle_stop(&(handle->idler));
-  auto IdleClose = [](uv_handle_t* handle) {
-    nghttp2_session_t* session = container_of(handle, nghttp2_session_t, idler);
+  uv_prepare_stop(&(handle->prep));
+  auto PrepClose = [](uv_handle_t* handle) {
+    nghttp2_session_t* session = container_of(handle, nghttp2_session_t, prep);
     if (session->callbacks.on_free_session != nullptr) {
       session->callbacks.on_free_session(session);
     }
   };
-  uv_close(reinterpret_cast<uv_handle_t*>(&(handle->idler)), IdleClose);
+  uv_close(reinterpret_cast<uv_handle_t*>(&(handle->prep)), PrepClose);
 
   nghttp2_session_terminate_session(handle->session, NGHTTP2_NO_ERROR);
   nghttp2_session_del(handle->session);

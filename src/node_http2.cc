@@ -73,17 +73,25 @@ inline void CopyHeaders(Isolate* isolate,
   for (size_t n = 0; n < headers->Length(); n++) {
     item = headers->Get(n);
     header = item.As<Array>();
-    Utf8Value key(isolate, header->Get(0));
-    Utf8Value value(isolate, header->Get(1));
+    Local<Value> key = header->Get(0);
+    Local<Value> value = header->Get(1);
+    CHECK(key->IsString());
+    CHECK(value->IsString());
+    size_t keylen = StringBytes::StorageSize(isolate, key, ASCII);
+    size_t valuelen = StringBytes::StorageSize(isolate, value, ASCII);
     (*list)[n].flags = NGHTTP2_NV_FLAG_NONE;
-    (*list)[n].name = Malloc<uint8_t>(key.length());
-    (*list)[n].value = Malloc<uint8_t>(value.length());
-    (*list)[n].namelen = key.length();
-    (*list)[n].valuelen = value.length();
-    memcpy((*list)[n].name, *key, key.length());
-    memcpy((*list)[n].value, *value, value.length());
     if (header->Get(2)->BooleanValue())
       (*list)[n].flags |= NGHTTP2_NV_FLAG_NO_INDEX;
+    (*list)[n].name = Malloc<uint8_t>(keylen);
+    (*list)[n].value = Malloc<uint8_t>(valuelen);
+    (*list)[n].namelen =
+        StringBytes::Write(isolate,
+                           reinterpret_cast<char*>((*list)[n].name),
+                           keylen, key, ASCII);
+    (*list)[n].valuelen =
+        StringBytes::Write(isolate,
+                           reinterpret_cast<char*>((*list)[n].value),
+                           valuelen, value, ASCII);
   }
 }
 

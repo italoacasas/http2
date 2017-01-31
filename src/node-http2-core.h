@@ -176,7 +176,7 @@ struct node_nghttp2_session_callbacks_s {
 // Handle Types
 struct nghttp2_session_s {
   uv_loop_t* loop;
-  uv_idle_t idler;
+  uv_prepare_t prep;
   nghttp2_session* session;
   nghttp2_session_type session_type;
   node_nghttp2_session_callbacks callbacks;
