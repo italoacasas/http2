@@ -816,7 +816,28 @@ static bool CheckHeaderAllowsMultiple(nghttp2_vec* name) {
   // TODO(jasnell): There are faster ways of doing this. A binary
   // search tree, for instance. This is implemented this way to
   // get it minimally working but let's make this more efficient later.
-  if (name->len == 0) return false;
+  if (name->len < 3) return false;
+  int8_t ch = name->base[0];
+  if (ch != 0x61 /* a */ && ch != 0x63 /* c */ && ch != 0x65 /* e */ &&
+      ch != 0x66 /* f */ && ch != 0x68 /* h */ && ch != 0x69 /* i */ &&
+      ch != 0x6c /* l */ && ch != 0x6d /* m */ && ch != 0x70 /* p */ &&
+      ch != 0x72 /* r */ && ch != 0x73 /* s */ && ch != 0x75 /* u */ ) {
+    return false;
+  }
+  ch = name->base[1];
+  if (ch != 0x61 /* a */ && ch != 0x65 /* e */ && ch != 0x66 /* f */ &&
+      ch != 0x67 /* g */ && ch != 0x6f /* o */ && ch != 0x72 /* r */ &&
+      ch != 0x73 /* s */ && ch != 0x74 /* t */ && ch != 0x75 /* u */ &&
+      ch != 0x78 /* x */) {
+    return false;
+  }
+  ch = name->base[2];
+  if (ch != 0x2d /* - */ && ch != 0x61 /* a */ && ch != 0x63 /* c */ &&
+      ch != 0x65 /* e */ && ch != 0x66 /* f */ && ch != 0x6e /* n */ &&
+      ch != 0x6f /* o */ && ch != 0x70 /* p */ && ch != 0x72 /* r */ &&
+      ch != 0x73 /* s */ && ch != 0x74 /* t */ && ch != 0x78 /* x */) {
+    return false;
+  }
   std::string needle = std::string(reinterpret_cast<char*>(name->base),
                                    name->len);
   return !std::binary_search(singletonHeaders.begin(),
@@ -847,14 +868,12 @@ void Http2Session::OnHeaders(nghttp2_session_t* handle,
     nghttp2_header_list* item = headers;
     nghttp2_vec name = nghttp2_rcbuf_get_buf(item->name);
     nghttp2_vec value = nghttp2_rcbuf_get_buf(item->value);
-    name_str = String::NewFromUtf8(isolate,
-                                   reinterpret_cast<char*>(name.base),
-                                   v8::NewStringType::kNormal,
-                                   name.len).ToLocalChecked();
-    value_str = String::NewFromUtf8(isolate,
-                                    reinterpret_cast<char*>(value.base),
-                                    v8::NewStringType::kNormal,
-                                    value.len).ToLocalChecked();
+    name_str = String::NewFromOneByte(isolate, name.base,
+                                      v8::NewStringType::kNormal,
+                                      name.len).ToLocalChecked();
+    value_str = String::NewFromOneByte(isolate, value.base,
+                                       v8::NewStringType::kNormal,
+                                       value.len).ToLocalChecked();
     if (holder->Has(context, name_str).FromJust()) {
       if (CheckHeaderAllowsMultiple(&name)) {
         Local<Value> existing = holder->Get(context, name_str).ToLocalChecked();
