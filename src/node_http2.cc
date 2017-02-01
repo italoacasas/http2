@@ -776,61 +776,100 @@ void Http2Session::OnTrailers(nghttp2_session_t* handle,
   }
 }
 
-// These are the headers that are only permitted to appear once within
-// a message. If multiple instances do occur, only the first value will
-// be accepted.
-static std::vector<std::string> singletonHeaders = {
-  "age",
-  "authorization",
-  "content-length",
-  "content-type",
-  "etag",
-  "expires",
-  "from",
-  "host",
-  "if-modified-since",
-  "if-unmodified-since",
-  "last-modified",
-  "location",
-  "max-forwards",
-  "proxy-authorization",
-  "referer",
-  "retry-after",
-  "server",
-  "user-agent"
-};
-
 static bool CheckHeaderAllowsMultiple(nghttp2_vec* name) {
-  // TODO(jasnell): There are faster ways of doing this. A binary
-  // search tree, for instance. This is implemented this way to
-  // get it minimally working but let's make this more efficient later.
-  if (name->len < 3) return false;
-  int8_t ch = name->base[0];
-  if (ch != 0x61 /* a */ && ch != 0x63 /* c */ && ch != 0x65 /* e */ &&
-      ch != 0x66 /* f */ && ch != 0x68 /* h */ && ch != 0x69 /* i */ &&
-      ch != 0x6c /* l */ && ch != 0x6d /* m */ && ch != 0x70 /* p */ &&
-      ch != 0x72 /* r */ && ch != 0x73 /* s */ && ch != 0x75 /* u */ ) {
-    return false;
+  switch (name->len) {
+    case 3:
+      if (memcmp(name->base, "age", 3) == 0)
+        return false;
+      break;
+    case 4:
+      switch (name->base[3]) {
+        case 'g':
+          if (memcmp(name->base, "eta", 3) == 0)
+            return false;
+          break;
+        case 'm':
+          if (memcmp(name->base, "fro", 3) == 0)
+            return false;
+          break;
+        case 't':
+          if (memcmp(name->base, "hos", 3) == 0)
+            return false;
+          break;
+      }
+    case 6:
+      if (memcmp(name->base, "server", 6) == 0)
+        return false;
+      break;
+    case 7:
+      switch (name->base[6]) {
+        case 's':
+          if (memcmp(name->base, "expire", 6) == 0)
+            return false;
+          break;
+        case 'r':
+          if (memcmp(name->base, "refere", 6) == 0)
+            return false;
+          break;
+      }
+      break;
+    case 8:
+      if (memcmp(name->base, "location", 8) == 0)
+        return false;
+      break;
+    case 10:
+      if (memcmp(name->base, "user-agent", 10) == 0)
+        return false;
+      break;
+    case 11:
+      if (memcmp(name->base, "retry-after", 11) == 0)
+        return false;
+      break;
+    case 12:
+      switch (name->base[11]) {
+        case 'e':
+          if (memcmp(name->base, "content-typ", 11) == 0)
+            return false;
+          break;
+        case 's':
+          if (memcmp(name->base, "max-forward", 11) == 0)
+            return false;
+          break;
+      }
+      break;
+    case 13:
+      switch (name->base[12]) {
+        case 'd':
+          if (memcmp(name->base, "last-modifie", 12) == 0)
+            return false;
+          break;
+        case 'n':
+          if (memcmp(name->base, "authorizatio", 12) == 0)
+            return false;
+          break;
+      }
+      break;
+    case 14:
+      if (memcmp(name->base, "content-length", 14) == 0)
+        return false;
+      break;
+    case 17:
+      if (memcmp(name->base, "if-modified-since", 17) == 0)
+        return false;
+      break;
+    case 19:
+      switch (name->base[18]) {
+        case 'e':
+          if (memcmp(name->base, "if-unmodified-sinc", 18) == 0)
+            return false;
+          break;
+        case 'n':
+          if (memcmp(name->base, "proxy-authenticatio", 18) == 0)
+            return false;
+          break;
+      }
   }
-  ch = name->base[1];
-  if (ch != 0x61 /* a */ && ch != 0x65 /* e */ && ch != 0x66 /* f */ &&
-      ch != 0x67 /* g */ && ch != 0x6f /* o */ && ch != 0x72 /* r */ &&
-      ch != 0x73 /* s */ && ch != 0x74 /* t */ && ch != 0x75 /* u */ &&
-      ch != 0x78 /* x */) {
-    return false;
-  }
-  ch = name->base[2];
-  if (ch != 0x2d /* - */ && ch != 0x61 /* a */ && ch != 0x63 /* c */ &&
-      ch != 0x65 /* e */ && ch != 0x66 /* f */ && ch != 0x6e /* n */ &&
-      ch != 0x6f /* o */ && ch != 0x70 /* p */ && ch != 0x72 /* r */ &&
-      ch != 0x73 /* s */ && ch != 0x74 /* t */ && ch != 0x78 /* x */) {
-    return false;
-  }
-  std::string needle = std::string(reinterpret_cast<char*>(name->base),
-                                   name->len);
-  return !std::binary_search(singletonHeaders.begin(),
-                             singletonHeaders.end(),
-                             needle);
+  return true;
 }
 
 void Http2Session::OnHeaders(nghttp2_session_t* handle,
