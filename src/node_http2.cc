@@ -468,16 +468,13 @@ void Http2Session::SubmitRequest(const FunctionCallbackInfo<Value>& args) {
   nghttp2_priority_spec prispec;
   nghttp2_priority_spec_init(&prispec, parent_id, weight, exclusive ? 1 : 0);
 
-  // Using a vector instead of a MaybeStackBuffer because
-  // we need to make sure that pseudo headers are moved to
-  // the front of the list...
-  MaybeStackBuffer<nghttp2_nv> list(headers->Length());
-  CopyHeaders(isolate, &list, headers);
+  Headers list(isolate, headers);
 
   std::shared_ptr<nghttp2_stream_t> assigned;
   args.GetReturnValue().Set(
-      nghttp2_submit_request(**session, &prispec, &list, &assigned, endStream));
-  FreeHeaders(&list);
+      nghttp2_submit_request(**session, &prispec,
+                             *list, list.length(),
+                             &assigned, endStream));
 }
 
 void Http2Session::SubmitResponse(const FunctionCallbackInfo<Value>& args) {
@@ -500,13 +497,10 @@ void Http2Session::SubmitResponse(const FunctionCallbackInfo<Value>& args) {
     return args.GetReturnValue().Set(NGHTTP2_ERR_INVALID_STREAM_ID);
   }
 
-  MaybeStackBuffer<nghttp2_nv> list(headers->Length());
-  CopyHeaders(isolate, &list, headers);
+  Headers list(isolate, headers);
 
   args.GetReturnValue().Set(
-      nghttp2_submit_response(stream_handle, &list, endStream));
-
-  FreeHeaders(&list);
+      nghttp2_submit_response(stream_handle, *list, list.length(), endStream));
 }
 
 void Http2Session::SendHeaders(const FunctionCallbackInfo<Value>& args) {
@@ -527,12 +521,10 @@ void Http2Session::SendHeaders(const FunctionCallbackInfo<Value>& args) {
   }
 
   Local<Array> headers = args[1].As<Array>();
-  MaybeStackBuffer<nghttp2_nv> list(headers->Length());
-  CopyHeaders(isolate, &list, headers);
+  Headers list(isolate, headers);
 
-  args.GetReturnValue().Set(nghttp2_submit_info(stream_handle, &list));
-
-  FreeHeaders(&list);
+  args.GetReturnValue().Set(
+      nghttp2_submit_info(stream_handle, *list, list.length()));
 }
 
 void Http2Session::ShutdownStream(const FunctionCallbackInfo<Value>& args) {
@@ -671,15 +663,11 @@ void Http2Session::SubmitPushPromise(const FunctionCallbackInfo<Value>& args) {
 
   Local<Array> headers = args[1].As<Array>();
   bool endStream = args[2]->BooleanValue();
-  MaybeStackBuffer<nghttp2_nv> list(headers->Length());
+  Headers list(isolate, headers);
 
-  CopyHeaders(isolate, &list, headers);
-
-  int32_t ret = nghttp2_submit_push_promise(parent, &list,
+  int32_t ret = nghttp2_submit_push_promise(parent, *list, list.length(),
                                             &assigned, endStream);
   args.GetReturnValue().Set(ret);
-
-  FreeHeaders(&list);
 }
 
 int Http2Session::DoWrite(WriteWrap* req_wrap,
@@ -858,22 +846,20 @@ void Http2Session::OnHeaders(nghttp2_session_t* handle,
 
   Isolate* isolate = env->isolate();
   HandleScope scope(isolate);
-
-  // TODO(jasnell): Make this a null object or a map
   Local<Object> holder = Object::New(isolate);
+  holder->SetPrototype(context, v8::Null(isolate));
   Local<String> name_str;
   Local<String> value_str;
   Local<Array> array;
   while (headers != nullptr) {
     nghttp2_header_list* item = headers;
+    name_str = ExternalHeaderNameResource::New(isolate, item->name);
     nghttp2_vec name = nghttp2_rcbuf_get_buf(item->name);
     nghttp2_vec value = nghttp2_rcbuf_get_buf(item->value);
-    name_str = String::NewFromOneByte(isolate, name.base,
-                                      v8::NewStringType::kNormal,
-                                      name.len).ToLocalChecked();
-    value_str = String::NewFromOneByte(isolate, value.base,
-                                       v8::NewStringType::kNormal,
-                                       value.len).ToLocalChecked();
+    value_str = String::NewFromUtf8(isolate,
+                                    reinterpret_cast<char*>(value.base),
+                                    v8::NewStringType::kNormal,
+                                    value.len).ToLocalChecked();
     if (holder->Has(context, name_str).FromJust()) {
       if (CheckHeaderAllowsMultiple(&name)) {
         Local<Value> existing = holder->Get(context, name_str).ToLocalChecked();

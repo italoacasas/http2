@@ -319,19 +319,22 @@ inline int nghttp2_stream_write(
 
 inline int nghttp2_submit_response(
     std::shared_ptr<nghttp2_stream_t> handle,
-    MaybeStackBuffer<nghttp2_nv>* nva,
+    nghttp2_nv* nva,
+    size_t len,
     bool emptyPayload = false);
 
 inline int32_t nghttp2_submit_request(
     nghttp2_session_t* handle,
     nghttp2_priority_spec* prispec,
-    MaybeStackBuffer<nghttp2_nv>* nva,
+    nghttp2_nv* nva,
+    size_t len,
     std::shared_ptr<nghttp2_stream_t>* assigned,
     bool emptyPayload = true);
 
 inline int nghttp2_submit_info(
     std::shared_ptr<nghttp2_stream_t> handle,
-    MaybeStackBuffer<nghttp2_nv>* nva);
+    nghttp2_nv* nva,
+    size_t len);
 
 inline int nghttp2_submit_priority(
     std::shared_ptr<nghttp2_stream_t> handle,
@@ -344,7 +347,8 @@ inline int nghttp2_submit_rst_stream(
 
 inline int nghttp2_submit_push_promise(
     std::shared_ptr<nghttp2_stream_t> handle,
-    MaybeStackBuffer<nghttp2_nv>* nva,
+    nghttp2_nv* nva,
+    size_t len,
     std::shared_ptr<nghttp2_stream_t>* assigned,
     bool writable = true);
 

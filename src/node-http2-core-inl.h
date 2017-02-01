@@ -352,7 +352,6 @@ ssize_t OnStreamRead(nghttp2_session* session,
 inline void nghttp2_free_headers_list(nghttp2_pending_headers_cb* cb) {
   while (cb->headers != nullptr) {
     nghttp2_header_list* item = cb->headers;
-    nghttp2_rcbuf_decref(item->name);
     nghttp2_rcbuf_decref(item->value);
     cb->headers = item->next;
     header_free_list.push(item);
@@ -892,13 +891,13 @@ inline int nghttp2_submit_settings(nghttp2_session_t* handle,
 // Submit additional headers for a stream. Typically used to
 // submit informational (1xx) headers
 inline int nghttp2_submit_info(std::shared_ptr<nghttp2_stream_t> handle,
-                               MaybeStackBuffer<nghttp2_nv>* nva) {
+                               nghttp2_nv* nva, size_t len) {
   std::shared_ptr<nghttp2_stream_t> h = handle;
   nghttp2_session_t* session = h->session;
   return nghttp2_submit_headers(session->session,
                                 NGHTTP2_FLAG_NONE,
                                 h->id, nullptr,
-                                **nva, nva->length(), nullptr);
+                                nva, len, nullptr);
 }
 
 inline int nghttp2_submit_priority(std::shared_ptr<nghttp2_stream_t> handle,
@@ -929,7 +928,8 @@ inline int nghttp2_submit_rst_stream(std::shared_ptr<nghttp2_stream_t> handle,
 // Submit a push promise
 inline int32_t nghttp2_submit_push_promise(
     std::shared_ptr<nghttp2_stream_t> handle,
-    MaybeStackBuffer<nghttp2_nv>* nva,
+    nghttp2_nv* nva,
+    size_t len,
     std::shared_ptr<nghttp2_stream_t>* assigned,
     bool emptyPayload) {
   std::shared_ptr<nghttp2_stream_t> h = handle;
@@ -937,7 +937,7 @@ inline int32_t nghttp2_submit_push_promise(
 
   int32_t ret = nghttp2_submit_push_promise(session->session,
                                             NGHTTP2_FLAG_NONE,
-                                            h->id, **nva, nva->length(),
+                                            h->id, nva, len,
                                             nullptr);
   if (ret > 0) {
     *assigned = nghttp2_stream_init(session, ret);
@@ -952,7 +952,8 @@ inline int32_t nghttp2_submit_push_promise(
 // be sent.
 inline int nghttp2_submit_response(
     std::shared_ptr<nghttp2_stream_t> handle,
-    MaybeStackBuffer<nghttp2_nv>* nva,
+    nghttp2_nv* nva,
+    size_t len,
     bool emptyPayload) {
   std::shared_ptr<nghttp2_stream_t> h = handle;
   nghttp2_session_t* session = h->session;
@@ -964,11 +965,8 @@ inline int nghttp2_submit_response(
   if (!emptyPayload && nghttp2_stream_writable(h))
     provider = &prov;
 
-  return nghttp2_submit_response(session->session,
-                                 handle->id,
-                                 **nva,
-                                 nva->length(),
-                                 provider);
+  return nghttp2_submit_response(session->session, handle->id,
+                                 nva, len, provider);
 }
 
 
@@ -978,7 +976,8 @@ inline int nghttp2_submit_response(
 inline int32_t nghttp2_submit_request(
     nghttp2_session_t* handle,
     nghttp2_priority_spec* prispec,
-    MaybeStackBuffer<nghttp2_nv>* nva,
+    nghttp2_nv* nva,
+    size_t len,
     std::shared_ptr<nghttp2_stream_t>* assigned,
     bool emptyPayload) {
   nghttp2_data_provider* provider = nullptr;
@@ -988,7 +987,7 @@ inline int32_t nghttp2_submit_request(
   if (!emptyPayload)
     provider = &prov;
   int32_t ret = nghttp2_submit_request(handle->session,
-                                       prispec, **nva, nva->length(),
+                                       prispec, nva, len,
                                        provider, nullptr);
   // Assign the nghttp2_stream_t handle
   if (ret > 0) {
