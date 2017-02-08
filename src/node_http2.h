@@ -14,6 +14,7 @@
 #include "node_crypto_bio.h"
 #include "stream_base.h"
 #include "stream_base-inl.h"
+#include "string_bytes.h"
 #include "util.h"
 #include "util-inl.h"
 #include "v8.h"
@@ -25,9 +26,11 @@
 namespace node {
 namespace http2 {
 
+using v8::Array;
 using v8::Context;
 using v8::EscapableHandleScope;
 using v8::Exception;
+using v8::External;
 using v8::External;
 using v8::Function;
 using v8::FunctionCallbackInfo;
@@ -36,6 +39,7 @@ using v8::Integer;
 using v8::Isolate;
 using v8::Local;
 using v8::Map;
+using v8::MaybeLocal;
 using v8::Name;
 using v8::Object;
 using v8::Persistent;
@@ -313,6 +317,7 @@ class Http2Session : public AsyncWrap, public StreamBase {
     nghttp2_set_callback_stream_free(&cb, OnStreamFree);
     nghttp2_set_callback_stream_get_trailers(&cb, OnTrailers);
     nghttp2_set_callbacks_free_session(&cb, OnFreeSession);
+    nghttp2_set_callbacks_allocate_send_buf(&cb, OnAllocateSend);
 
     Http2Options opts(env, options);
 
@@ -365,8 +370,7 @@ class Http2Session : public AsyncWrap, public StreamBase {
   static void OnStreamClose(nghttp2_session_t* session,
                             int32_t id, uint32_t error_code);
   static void OnSessionSend(nghttp2_session_t* handle,
-                            const uv_buf_t* bufs,
-                            unsigned int nbufs,
+                            uv_buf_t* bufs,
                             size_t total);
   static void OnDataChunks(nghttp2_session_t* session,
                            std::shared_ptr<nghttp2_stream_t> stream,
@@ -379,6 +383,8 @@ class Http2Session : public AsyncWrap, public StreamBase {
   static void OnTrailers(nghttp2_session_t* handle,
                          std::shared_ptr<nghttp2_stream_t> stream,
                          MaybeStackBuffer<nghttp2_nv>* trailers);
+  static uv_buf_t* OnAllocateSend(nghttp2_session_t* handle,
+                                  size_t recommended);
 
   int DoWrite(WriteWrap* w, uv_buf_t* bufs, size_t count,
               uv_stream_t* send_handle) override;
@@ -525,6 +531,123 @@ class SessionShutdownWrap : public ReqWrap<uv_idle_t> {
   int32_t lastStreamID_;
   bool immediate_;
   MaybeStackBuffer<uint8_t> opaqueData_;
+};
+
+class SessionSendBuffer : public WriteWrap {
+ public:
+  static void OnDone(WriteWrap* req, int status) {
+    ::delete req;
+  }
+
+  SessionSendBuffer(Environment* env,
+                    Local<Object> obj,
+                    size_t size)
+      : WriteWrap(env, obj, nullptr, OnDone) {
+    buffer_ = uv_buf_init(new char[size], size);
+  }
+
+  ~SessionSendBuffer() {
+    delete[] buffer_.base;
+  }
+
+  uv_buf_t buffer_;
+
+ protected:
+  // This is just to avoid the compiler error. This should not be called
+  void operator delete(void* ptr) { UNREACHABLE(); }
+};
+
+class ExternalHeaderNameResource :
+    public String::ExternalOneByteStringResource {
+ public:
+   ExternalHeaderNameResource(nghttp2_rcbuf* buf)
+       : buf_(buf), vec_(nghttp2_rcbuf_get_buf(buf)) {
+   }
+   ~ExternalHeaderNameResource() override {
+     nghttp2_rcbuf_decref(buf_);
+     buf_ = nullptr;
+   }
+   const char* data() const override {
+     return const_cast<const char*>(reinterpret_cast<char*>(vec_.base));
+   }
+
+   size_t length() const override {
+     return vec_.len;
+   }
+
+  static Local<String> New(Isolate* isolate, nghttp2_rcbuf* buf) {
+    EscapableHandleScope scope(isolate);
+    nghttp2_vec vec = nghttp2_rcbuf_get_buf(buf);
+    if (vec.len == 0) {
+      nghttp2_rcbuf_decref(buf);
+      return scope.Escape(String::Empty(isolate));
+    }
+
+    ExternalHeaderNameResource* h_str = new ExternalHeaderNameResource(buf);
+    MaybeLocal<String> str = String::NewExternalOneByte(isolate, h_str);
+    isolate->AdjustAmountOfExternalAllocatedMemory(vec.len);
+
+    if (str.IsEmpty()) {
+      delete h_str;
+      return scope.Escape(String::Empty(isolate));
+    }
+
+    return scope.Escape(str.ToLocalChecked());
+  }
+ private:
+   nghttp2_rcbuf* buf_;
+   nghttp2_vec vec_;
+};
+
+class Headers {
+ public:
+  Headers(Isolate* isolate, Local<Array> headers) {
+    headers_.AllocateSufficientStorage(headers->Length());
+    Local<Value> item;
+    Local<Array> header;
+
+    for (size_t n = 0; n < headers->Length(); n++) {
+      item = headers->Get(n);
+      header = item.As<Array>();
+      Local<Value> key = header->Get(0);
+      Local<Value> value = header->Get(1);
+      CHECK(key->IsString());
+      CHECK(value->IsString());
+      size_t keylen = StringBytes::StorageSize(isolate, key, ASCII);
+      size_t valuelen = StringBytes::StorageSize(isolate, value, ASCII);
+      headers_[n].flags = NGHTTP2_NV_FLAG_NONE;
+      if (header->Get(2)->BooleanValue())
+        headers_[n].flags |= NGHTTP2_NV_FLAG_NO_INDEX;
+      headers_[n].name = Malloc<uint8_t>(keylen);
+      headers_[n].value = Malloc<uint8_t>(valuelen);
+      headers_[n].namelen =
+          StringBytes::Write(isolate,
+                            reinterpret_cast<char*>(headers_[n].name),
+                            keylen, key, ASCII);
+      headers_[n].valuelen =
+          StringBytes::Write(isolate,
+                            reinterpret_cast<char*>(headers_[n].value),
+                            valuelen, value, ASCII);
+    }
+  }
+
+  ~Headers() {
+    for (size_t n = 0; n < headers_.length(); n++) {
+      free(headers_[n].name);
+      free(headers_[n].value);
+    }
+  }
+
+  nghttp2_nv* operator*() {
+    return *headers_;
+  }
+
+  size_t length() {
+    return headers_.length();
+  }
+
+ private:
+   MaybeStackBuffer<nghttp2_nv> headers_;
 };
 
 }  // namespace http2
